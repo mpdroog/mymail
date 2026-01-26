@@ -172,6 +172,15 @@ func (s *Session) handleMAIL(arg string) {
 		return
 	}
 
+	// Check sender whitelist (skip for authenticated users)
+	if config.C.EnableWhitelist && !s.auth {
+		if !s.isSenderWhitelisted(email) {
+			log.Printf("Rejected mail from non-whitelisted sender: %s", email)
+			s.reply(550, "Sender not on whitelist. " + config.C.RejectMsg)
+			return
+		}
+	}
+
 	s.mailFrom = email
 	s.rcptTo = make([]string, 0)
 	s.data = nil
@@ -425,5 +434,24 @@ func (s *Session) isLocalDomain(domain string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+func (s *Session) isSenderWhitelisted(email string) bool {
+	// Check exact email match
+	for _, w := range config.C.WhitelistEmails {
+		if strings.EqualFold(w, email) {
+			return true
+		}
+	}
+
+	// Check domain match
+	domain := s.getDomain(email)
+	for _, d := range config.C.WhitelistDomains {
+		if strings.EqualFold(d, domain) {
+			return true
+		}
+	}
+
 	return false
 }

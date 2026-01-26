@@ -32,6 +32,13 @@ type Config struct {
 
 	// Domain settings
 	LocalDomains []string `json:"local_domains"` // Domains we accept mail for
+
+	// Sender whitelist
+	EnableWhitelist   bool     `json:"enable_whitelist"`   // Enable sender whitelist
+	WhitelistEmails   []string `json:"whitelist_emails"`   // Whitelisted email addresses
+	WhitelistDomains  []string `json:"whitelist_domains"`  // Whitelisted sender domains
+
+	RejectMsg string `json:"reject_msg"`
 }
 
 var C Config

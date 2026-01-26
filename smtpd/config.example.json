@@ -13,5 +13,9 @@
   "relay_port": 587,
   "relay_user": "",
   "relay_password": "",
-  "local_domains": ["example.com", "mail.example.com"]
+  "local_domains": ["example.com", "mail.example.com"],
+  "enable_whitelist": true,
+  "whitelist_emails": ["trusted@sender.com", "noreply@github.com"],
+  "whitelist_domains": ["trusted-company.com", "google.com"],
+  "reject_msg": "Please use the contact form at rootdev.nl"
 }
