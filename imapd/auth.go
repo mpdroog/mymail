@@ -1,0 +1,73 @@
+package main
+
+import (
+	"bufio"
+	"os"
+	"strings"
+	"sync"
+)
+
+type UserStore struct {
+	mu    sync.RWMutex
+	users map[string]string // username -> password
+	path  string
+}
+
+func NewUserStore(path string) (*UserStore, error) {
+	us := &UserStore{
+		users: make(map[string]string),
+		path:  path,
+	}
+	if err := us.Load(); err != nil {
+		return nil, err
+	}
+	return us, nil
+}
+
+func (us *UserStore) Load() error {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+
+	file, err := os.Open(us.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			us.users = make(map[string]string)
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	users := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			users[parts[0]] = parts[1]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	us.users = users
+	return nil
+}
+
+func (us *UserStore) Validate(username, password string) bool {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+
+	storedPass, exists := us.users[username]
+	if !exists {
+		return false
+	}
+	return storedPass == password
+}
+
+func (us *UserStore) Reload() error {
+	return us.Load()
+}

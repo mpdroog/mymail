@@ -1,0 +1,4 @@
+# Users file - one user per line in format: username:password
+# Lines starting with # are comments
+alice:password123
+bob:secretpass
