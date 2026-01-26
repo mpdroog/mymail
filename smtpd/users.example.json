@@ -1,0 +1,4 @@
+{
+  "user@example.com": "secretpassword",
+  "admin@example.com": "adminpassword"
+}

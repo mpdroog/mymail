@@ -1,3 +1,6 @@
 .DS_Store
 imapd/imapd
 imapd/maildir
+smtpd/smtpd
+smtpd/users.json
+smtpd/config.json
