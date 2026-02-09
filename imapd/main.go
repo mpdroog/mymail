@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/mpdroog/mymail/imapd/config"
@@ -70,6 +71,7 @@ func main() {
 		log.Println("WARNING: Insecure auth enabled (no TLS required)")
 	}
 
+	daemon.SdNotify(false, daemon.SdNotifyReady)
 	if err := imapSrv.ListenAndServe(config.C.ListenAddr); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
