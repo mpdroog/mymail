@@ -48,36 +48,37 @@ func (s *Storage) Init() error {
 	return nil
 }
 
-// StoreLocal stores an email for local delivery using Maildir format
+// StoreLocal stores an email for local delivery in IMAP-compatible format
+// Emails are stored as {mail_dir}/{domain}/INBOX/{timestamp}_{uid}.eml
 func (s *Storage) StoreLocal(recipient, from string, data []byte) error {
-	// Extract local part of email for directory
-	localPart := getLocalPart(recipient)
 	domain := getDomain(recipient)
 
-	// Create user maildir structure
-	userDir := filepath.Join(s.mailDir, domain, localPart)
-	newDir := filepath.Join(userDir, "new")
-	curDir := filepath.Join(userDir, "cur")
-	tmpDir := filepath.Join(userDir, "tmp")
-
-	for _, dir := range []string{newDir, curDir, tmpDir} {
-		if err := os.MkdirAll(dir, 0750); err != nil {
-			return err
-		}
-	}
-
-	// Generate unique filename
-	filename := generateMaildirFilename()
-
-	// Write to tmp first
-	tmpPath := filepath.Join(tmpDir, filename)
-	if err := os.WriteFile(tmpPath, data, 0640); err != nil {
+	// Store in domain's INBOX folder (compatible with imapd)
+	inboxDir := filepath.Join(s.mailDir, domain, "INBOX")
+	if err := os.MkdirAll(inboxDir, 0750); err != nil {
 		return err
 	}
 
-	// Move to new
-	newPath := filepath.Join(newDir, filename)
-	return os.Rename(tmpPath, newPath)
+	// Generate unique filename with .eml extension for imapd compatibility
+	uid := s.nextUID(inboxDir)
+	filename := fmt.Sprintf("%d_%d.eml", time.Now().Unix(), uid)
+	filePath := filepath.Join(inboxDir, filename)
+
+	return os.WriteFile(filePath, data, 0640)
+}
+
+// nextUID returns the next available UID for a mailbox
+func (s *Storage) nextUID(mailboxPath string) int64 {
+	uidFile := filepath.Join(mailboxPath, ".uidnext")
+	data, err := os.ReadFile(uidFile)
+	uid := int64(1)
+	if err == nil {
+		if n, parseErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &uid); n != 1 || parseErr != nil {
+			uid = 1
+		}
+	}
+	os.WriteFile(uidFile, []byte(fmt.Sprintf("%d", uid+1)), 0600)
+	return uid
 }
 
 // QueueForRelay adds an email to the outgoing queue
@@ -170,21 +171,8 @@ func (s *Storage) RemoveFromQueue(id string) error {
 	return os.Remove(filename)
 }
 
-func generateMaildirFilename() string {
-	hostname, _ := os.Hostname()
-	return fmt.Sprintf("%d.%d.%s", time.Now().Unix(), os.Getpid(), hostname)
-}
-
 func generateQueueID() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
-}
-
-func getLocalPart(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) >= 1 {
-		return parts[0]
-	}
-	return ""
 }
 
 func getDomain(email string) string {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -38,79 +37,32 @@ type Mailbox struct {
 type Storage struct {
 	mu        sync.RWMutex
 	basePath  string
-	whitelist map[string]struct{}
-	wlPath    string
+	domain    string
 }
 
-func NewStorage(basePath, whitelistPath string) (*Storage, error) {
+func NewStorage(basePath string, domain string) (*Storage, error) {
 	s := &Storage{
 		basePath:  basePath,
-		whitelist: make(map[string]struct{}),
-		wlPath:    whitelistPath,
-	}
-	if err := s.LoadWhitelist(); err != nil {
-		return nil, err
+		domain:    domain,
 	}
 	return s, nil
 }
 
-func (s *Storage) LoadWhitelist() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	file, err := os.Open(s.wlPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.whitelist = make(map[string]struct{})
-			return nil
-		}
-		return err
-	}
-	defer file.Close()
-
-	whitelist := make(map[string]struct{})
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		whitelist[strings.ToLower(line)] = struct{}{}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	s.whitelist = whitelist
-	return nil
-}
-
-func (s *Storage) isWhitelisted(from string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if len(s.whitelist) == 0 {
-		return true // No whitelist = allow all
-	}
-
-	addr, err := mail.ParseAddress(from)
-	if err != nil {
-		return false
-	}
-	_, ok := s.whitelist[strings.ToLower(addr.Address)]
-	return ok
+func (s *Storage) MailboxPath(username, mailbox string) string {
+	return filepath.Join(s.basePath, s.domain, username, mailbox)
 }
 
 func (s *Storage) EnsureMailbox(username, mailbox string) error {
-	path := filepath.Join(s.basePath, username, mailbox)
-	return os.MkdirAll(path, 0700)
+	return os.MkdirAll(s.MailboxPath(username, mailbox), 0700) // TODO: Better security
 }
 
 func (s *Storage) GetMailbox(username, mailbox string) (*Mailbox, error) {
-	path := filepath.Join(s.basePath, username, mailbox)
+	path := s.MailboxPath(username, mailbox)
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return nil, err
 	}
 
+	fmt.Printf("GetMailbox=%s\n", path)
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
@@ -119,7 +71,7 @@ func (s *Storage) GetMailbox(username, mailbox string) (*Mailbox, error) {
 	mbox := &Mailbox{
 		Name:     mailbox,
 		Messages: make([]*Message, 0),
-		UIDNext:  1,
+		UIDNext:  1, // todo: uidnext counter somewhere?
 	}
 
 	for _, entry := range entries {
@@ -129,10 +81,6 @@ func (s *Storage) GetMailbox(username, mailbox string) (*Mailbox, error) {
 
 		msg, err := s.loadMessage(filepath.Join(path, entry.Name()))
 		if err != nil {
-			continue
-		}
-
-		if !s.isWhitelisted(msg.From) {
 			continue
 		}
 
@@ -269,6 +217,11 @@ func (s *Storage) DeleteMessage(path string) error {
 	return os.Remove(path)
 }
 
+func (s *Storage) DeleteMailbox(username, mailbox string) error {
+	path := s.MailboxPath(username, mailbox)
+	return os.RemoveAll(path)
+}
+
 func (s *Storage) GetRawMessage(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
@@ -297,8 +250,4 @@ func (s *Storage) ListMailboxes(username string) ([]string, error) {
 	}
 
 	return mailboxes, nil
-}
-
-func (s *Storage) ReloadWhitelist() error {
-	return s.LoadWhitelist()
 }

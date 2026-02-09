@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -9,24 +10,27 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/mpdroog/mymail/imapd/config"
 )
 
 func main() {
-	var (
-		addr          = flag.String("addr", ":1143", "IMAP server address")
-		maildir       = flag.String("maildir", "./maildir", "Path to mail storage directory")
-		usersFile     = flag.String("users", "./users.txt", "Path to users file (username:password per line)")
-		whitelistFile = flag.String("whitelist", "./whitelist.txt", "Path to sender whitelist file")
-		insecure      = flag.Bool("insecure", true, "Allow authentication without TLS")
-	)
+	configPath := flag.String("config", "config.json", "Path to configuration file")
+	flag.BoolVar(&config.Verbose, "v", false, "Verbose-mode (log more)")
 	flag.Parse()
 
-	users, err := NewUserStore(*usersFile)
+	if err := config.Load(*configPath); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	if config.Verbose {
+		fmt.Printf("config.C=%+v\n", config.C)
+	}
+
+	users, err := NewUserStore(config.C.AuthFile)
 	if err != nil {
 		log.Fatalf("Failed to load users: %v", err)
 	}
 
-	storage, err := NewStorage(*maildir, *whitelistFile)
+	storage, err := NewStorage(config.C.MailDir, config.C.Domain)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
@@ -41,7 +45,10 @@ func main() {
 			return srv.NewSession(), nil, nil
 		},
 		Caps:         caps,
-		InsecureAuth: *insecure,
+		InsecureAuth: config.C.InsecureAuth,
+	}
+	if config.Verbose {
+		opts.DebugWriter = os.Stdout
 	}
 
 	imapSrv := imapserver.New(opts)
@@ -55,22 +62,15 @@ func main() {
 			if err := users.Reload(); err != nil {
 				log.Printf("Failed to reload users: %v", err)
 			}
-			if err := storage.ReloadWhitelist(); err != nil {
-				log.Printf("Failed to reload whitelist: %v", err)
-			}
 			log.Println("Configuration reloaded")
 		}
 	}()
 
-	log.Printf("Starting IMAP server on %s", *addr)
-	log.Printf("Mail directory: %s", *maildir)
-	log.Printf("Users file: %s", *usersFile)
-	log.Printf("Whitelist file: %s", *whitelistFile)
-	if *insecure {
+	if config.C.InsecureAuth {
 		log.Println("WARNING: Insecure auth enabled (no TLS required)")
 	}
 
-	if err := imapSrv.ListenAndServe(*addr); err != nil {
+	if err := imapSrv.ListenAndServe(config.C.ListenAddr); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }

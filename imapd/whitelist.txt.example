@@ -1,7 +1,0 @@
-# Sender whitelist - one email address per line
-# Only emails from these senders will be shown
-# Lines starting with # are comments
-# Leave empty to allow all senders
-
-trusted@example.com
-noreply@company.org

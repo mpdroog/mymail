@@ -57,11 +57,15 @@ func (s *Session) Unselect() error {
 }
 
 func (s *Session) Create(mailbox string, options *imap.CreateOptions) error {
+	// Block creation of trash/deleted folders - we don't want them
+	if mailbox == "Deleted Messages" || mailbox == "Trash" {
+		return nil // Silently ignore
+	}
 	return s.server.storage.EnsureMailbox(s.username, mailbox)
 }
 
 func (s *Session) Delete(mailbox string) error {
-	return fmt.Errorf("DELETE not supported")
+	return s.server.storage.DeleteMailbox(s.username, mailbox)
 }
 
 func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) error {
@@ -201,7 +205,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 			}
 		}
 		if options.BodyStructure != nil {
-			bs := s.getBodyStructure(msg)
+			bs := s.getBodyStructure(msg, options.BodyStructure.Extended)
 			fw.WriteBodyStructure(bs)
 		}
 
@@ -295,13 +299,17 @@ func parseAddresses(s string) []imap.Address {
 	return result
 }
 
-func (s *Session) getBodyStructure(msg *Message) imap.BodyStructure {
-	return &imap.BodyStructureSinglePart{
+func (s *Session) getBodyStructure(msg *Message, extended bool) imap.BodyStructure {
+	bs := &imap.BodyStructureSinglePart{
 		Type:    "text",
 		Subtype: "plain",
 		Params:  map[string]string{"charset": "utf-8"},
 		Size:    uint32(msg.Size),
 	}
+	if extended {
+		bs.Extended = &imap.BodyStructureSinglePartExt{}
+	}
+	return bs
 }
 
 func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {

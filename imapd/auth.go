@@ -1,9 +1,8 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"os"
-	"strings"
 	"sync"
 )
 
@@ -28,7 +27,7 @@ func (us *UserStore) Load() error {
 	us.mu.Lock()
 	defer us.mu.Unlock()
 
-	file, err := os.Open(us.path)
+	f, err := os.Open(us.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			us.users = make(map[string]string)
@@ -36,21 +35,10 @@ func (us *UserStore) Load() error {
 		}
 		return err
 	}
-	defer file.Close()
+	defer f.Close()
 
 	users := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			users[parts[0]] = parts[1]
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	if err := json.NewDecoder(f).Decode(&users); err != nil {
 		return err
 	}
 	us.users = users

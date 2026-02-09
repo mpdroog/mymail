@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -34,9 +35,10 @@ func (p *Processor) Start() {
 	go p.run()
 }
 
-func (p *Processor) Stop() {
+func (p *Processor) Stop() error {
 	close(p.quit)
 	log.Println("Queue processor stopped")
+	return nil
 }
 
 func (p *Processor) run() {
@@ -49,26 +51,32 @@ func (p *Processor) run() {
 	for {
 		select {
 		case <-ticker.C:
-			p.processQueue()
+			e := p.processQueue()
+			if e != nil {
+				log.Printf("processQueue e=%v", e)
+			}
 		case <-p.quit:
 			return
 		}
 	}
 }
 
-func (p *Processor) processQueue() {
+func (p *Processor) processQueue() error {
 	emails, err := p.storage.GetQueuedEmails()
 	if err != nil {
-		log.Printf("Error getting queued emails: %v", err)
-		return
+		return err
 	}
 
 	for _, email := range emails {
-		p.processEmail(&email)
+		if e := p.processEmail(&email); e != nil {
+			log.Printf("processEmail e=%s", e.Error())
+		}
 	}
+
+	return nil
 }
 
-func (p *Processor) processEmail(email *storage.QueuedEmail) {
+func (p *Processor) processEmail(email *storage.QueuedEmail) error {
 	log.Printf("Processing queued email %s to %s", email.ID, email.To)
 
 	err := p.client.Send(email.From, email.To, email.Data)
@@ -77,10 +85,10 @@ func (p *Processor) processEmail(email *storage.QueuedEmail) {
 		email.LastError = err.Error()
 
 		if email.Attempts >= MaxRetries {
-			log.Printf("Email %s failed permanently after %d attempts: %v", email.ID, email.Attempts, err)
 			// Move to dead letter queue or notify sender
 			p.handlePermanentFailure(email)
-			return
+			return fmt.Errorf("Email %s failed permanently after %d attempts: %v", email.ID, email.Attempts, err)
+
 		}
 
 		// Schedule retry with exponential backoff
@@ -91,16 +99,18 @@ func (p *Processor) processEmail(email *storage.QueuedEmail) {
 			email.ID, email.Attempts, email.NextRetry, err)
 
 		if err := p.storage.UpdateQueuedEmail(email); err != nil {
-			log.Printf("Error updating queued email %s: %v", email.ID, err)
+			return fmt.Errorf("Error updating queued email %s: %v", email.ID, err)
 		}
-		return
+		return nil
 	}
 
 	// Success - remove from queue
-	log.Printf("Email %s delivered successfully to %s", email.ID, email.To)
 	if err := p.storage.RemoveFromQueue(email.ID); err != nil {
-		log.Printf("Error removing email %s from queue: %v", email.ID, err)
+		return fmt.Errorf("Error removing email %s from queue: %v", email.ID, err)
 	}
+	log.Printf("Email %s delivered successfully to %s", email.ID, email.To)
+
+	return nil
 }
 
 func (p *Processor) handlePermanentFailure(email *storage.QueuedEmail) {

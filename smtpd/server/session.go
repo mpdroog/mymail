@@ -21,15 +21,15 @@ type Session struct {
 	remoteAddr string
 
 	// State
-	helo       string
-	mailFrom   string
-	rcptTo     []string
-	data       []byte
-	tls        bool
-	auth       bool
+	helo     string
+	mailFrom string
+	rcptTo   []string
+	data     []byte
+	tls      bool
+	auth     bool
 
 	// Server reference
-	server     *Server
+	server *Server
 }
 
 func NewSession(conn net.Conn, server *Server) *Session {
@@ -66,35 +66,42 @@ func (s *Session) Handle() {
 
 		cmd, arg := s.parseCommand(line)
 
+		var e error
 		switch strings.ToUpper(cmd) {
 		case "HELO":
-			s.handleHELO(arg)
+			e = s.handleHELO(arg)
 		case "EHLO":
-			s.handleEHLO(arg)
+			e = s.handleEHLO(arg)
 		case "MAIL":
-			s.handleMAIL(arg)
+			e = s.handleMAIL(arg)
 		case "RCPT":
-			s.handleRCPT(arg)
+			e = s.handleRCPT(arg)
 		case "DATA":
-			s.handleDATA()
+			e = s.handleDATA()
 		case "RSET":
-			s.handleRSET()
+			e = s.handleRSET()
 		case "NOOP":
-			s.reply(250, "OK")
+			e = s.reply(250, "OK")
 		case "QUIT":
-			s.reply(221, "Bye")
+			e = s.reply(221, "Bye")
 			return
 		case "STARTTLS":
-			s.handleSTARTTLS()
+			e = s.handleSTARTTLS()
 		case "AUTH":
-			s.handleAUTH(arg)
+			e = s.handleAUTH(arg)
 		default:
-			s.reply(502, "Command not implemented")
+			e = s.reply(502, "Command not implemented")
+		}
+		if e != nil {
+			log.Printf("Process error from %s: %v", s.remoteAddr, e)
+			// Throw client out
+			return
 		}
 	}
 }
 
 func (s *Session) parseCommand(line string) (cmd, arg string) {
+	// TODO: Loose, tighten up?
 	parts := strings.SplitN(line, " ", 2)
 	cmd = parts[0]
 	if len(parts) > 1 {
@@ -103,33 +110,42 @@ func (s *Session) parseCommand(line string) (cmd, arg string) {
 	return
 }
 
-func (s *Session) reply(code int, msg string) {
-	s.writer.PrintfLine("%d %s", code, msg)
+func (s *Session) reply(code int, msg string) error {
+	if e := s.writer.PrintfLine("%d %s", code, msg); e != nil {
+		return e
+	}
+	return nil
 }
 
-func (s *Session) replyMulti(code int, lines []string) {
+func (s *Session) replyMulti(code int, lines []string) error {
+	var e error
 	for i, line := range lines {
 		if i == len(lines)-1 {
-			s.writer.PrintfLine("%d %s", code, line)
+			e = s.writer.PrintfLine("%d %s", code, line)
 		} else {
-			s.writer.PrintfLine("%d-%s", code, line)
+			e = s.writer.PrintfLine("%d-%s", code, line)
+		}
+		if e != nil {
+			return e
 		}
 	}
+	return nil
 }
 
-func (s *Session) handleHELO(arg string) {
+func (s *Session) handleHELO(arg string) error {
 	if arg == "" {
-		s.reply(501, "HELO requires domain argument")
-		return
+		return s.reply(501, "HELO requires domain argument")
 	}
 	s.helo = arg
-	s.reply(250, fmt.Sprintf("Hello %s", arg))
+	return s.reply(250, fmt.Sprintf("Hello %s", arg))
 }
 
-func (s *Session) handleEHLO(arg string) {
+func (s *Session) handleEHLO(arg string) error {
 	if arg == "" {
-		s.reply(501, "EHLO requires domain argument")
-		return
+		return s.reply(501, "EHLO requires domain argument")
+	}
+	if arg != config.C.Hostname {
+		return s.reply(501, "EHLO invalid domain")
 	}
 	s.helo = arg
 
@@ -144,22 +160,12 @@ func (s *Session) handleEHLO(arg string) {
 		extensions = append(extensions, "STARTTLS")
 	}
 
-	if config.C.RequireAuth && s.tls {
-		extensions = append(extensions, "AUTH PLAIN LOGIN")
-	}
-
-	s.replyMulti(250, extensions)
+	return s.replyMulti(250, extensions)
 }
 
-func (s *Session) handleMAIL(arg string) {
+func (s *Session) handleMAIL(arg string) error {
 	if s.helo == "" {
-		s.reply(503, "EHLO/HELO first")
-		return
-	}
-
-	if config.C.RequireAuth && !s.auth {
-		s.reply(530, "Authentication required")
-		return
+		return s.reply(503, "EHLO/HELO first")
 	}
 
 	arg = strings.TrimPrefix(strings.ToUpper(arg), "FROM:")
@@ -168,16 +174,16 @@ func (s *Session) handleMAIL(arg string) {
 	// Parse email address
 	email := s.extractEmail(arg)
 	if email == "" {
-		s.reply(501, "Invalid sender address")
-		return
+		return s.reply(501, "Invalid sender address")
 	}
 
 	// Check sender whitelist (skip for authenticated users)
 	if config.C.EnableWhitelist && !s.auth {
 		if !s.isSenderWhitelisted(email) {
+			// TODO: hide behind verbosity?
+			// TODO: Some webhook so we can do something with it later?
 			log.Printf("Rejected mail from non-whitelisted sender: %s", email)
-			s.reply(550, "Sender not on whitelist. " + config.C.RejectMsg)
-			return
+			return s.reply(550, "Sender not on whitelist. "+config.C.RejectMsg)
 		}
 	}
 
@@ -185,18 +191,16 @@ func (s *Session) handleMAIL(arg string) {
 	s.rcptTo = make([]string, 0)
 	s.data = nil
 
-	s.reply(250, "OK")
+	return s.reply(250, "OK")
 }
 
-func (s *Session) handleRCPT(arg string) {
+func (s *Session) handleRCPT(arg string) error {
 	if s.mailFrom == "" {
-		s.reply(503, "MAIL first")
-		return
+		return s.reply(503, "MAIL first")
 	}
 
 	if len(s.rcptTo) >= config.C.MaxRecipients {
-		s.reply(452, "Too many recipients")
-		return
+		return s.reply(452, "Too many recipients")
 	}
 
 	arg = strings.TrimPrefix(strings.ToUpper(arg), "TO:")
@@ -204,58 +208,63 @@ func (s *Session) handleRCPT(arg string) {
 
 	email := s.extractEmail(arg)
 	if email == "" {
-		s.reply(501, "Invalid recipient address")
-		return
+		return s.reply(501, "Invalid recipient address")
 	}
 
 	// Check if we accept mail for this domain
-	domain := s.getDomain(email)
+	domain, err := getDomain(email)
+	if err != nil {
+		log.Printf("handleRCPT::getDomain e=" + err.Error())
+		return s.reply(550, "Relay cannot process email")
+	}
+
 	if !s.isLocalDomain(domain) && !s.auth {
-		s.reply(550, "Relay access denied")
-		return
+		return s.reply(550, "Relay access denied")
 	}
 
 	s.rcptTo = append(s.rcptTo, email)
-	s.reply(250, "OK")
+	return s.reply(250, "OK")
 }
 
-func (s *Session) handleDATA() {
+func (s *Session) handleDATA() error {
 	if len(s.rcptTo) == 0 {
-		s.reply(503, "RCPT first")
-		return
+		return s.reply(503, "RCPT first")
 	}
 
-	s.reply(354, "Start mail input; end with <CRLF>.<CRLF>")
+	if e := s.reply(354, "Start mail input; end with <CRLF>.<CRLF>"); e != nil {
+		return e
+	}
 
 	// Read message data
 	data, err := s.readData()
 	if err != nil {
 		log.Printf("Error reading DATA from %s: %v", s.remoteAddr, err)
-		s.reply(451, "Error reading message")
-		return
+		return s.reply(451, "Error reading message")
 	}
 
 	if int64(len(data)) > config.C.MaxSize {
-		s.reply(552, "Message too large")
-		return
+		return s.reply(552, fmt.Sprintf("Message too large (limit=%s)", config.C.MaxSizeStr))
 	}
 
 	s.data = data
 
 	// Process the email
-	err = s.server.ProcessEmail(s.mailFrom, s.rcptTo, s.data)
+	err = s.server.ProcessEmail(s.mailFrom, s.rcptTo, s.data, s.auth)
 	if err != nil {
 		log.Printf("Error processing email: %v", err)
-		s.reply(451, "Error processing message")
-		return
+		return s.reply(451, "Error processing message")
 	}
 
-	s.reply(250, "OK message queued")
+	if e := s.reply(250, "OK message queued"); e != nil {
+		return e
+	}
 
 	// Reset state
 	s.mailFrom = ""
 	s.rcptTo = make([]string, 0)
 	s.data = nil
+
+	return nil
 }
 
 func (s *Session) readData() ([]byte, error) {
@@ -284,41 +293,40 @@ func (s *Session) readData() ([]byte, error) {
 	return data, nil
 }
 
-func (s *Session) handleRSET() {
+func (s *Session) handleRSET() error {
 	s.mailFrom = ""
 	s.rcptTo = make([]string, 0)
 	s.data = nil
-	s.reply(250, "OK")
+	return s.reply(250, "OK")
 }
 
-func (s *Session) handleSTARTTLS() {
+func (s *Session) handleSTARTTLS() error {
 	if s.tls {
-		s.reply(503, "TLS already active")
-		return
+		return s.reply(503, "TLS already active")
 	}
 
 	if config.C.TLSCert == "" {
-		s.reply(502, "TLS not available")
-		return
+		return s.reply(502, "TLS not available")
 	}
 
 	cert, err := tls.LoadX509KeyPair(config.C.TLSCert, config.C.TLSKey)
 	if err != nil {
+		// TODO: Move to config so this is only done once?
 		log.Printf("TLS cert error: %v", err)
-		s.reply(454, "TLS not available")
-		return
+		return s.reply(454, "TLS not available")
 	}
 
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
 
-	s.reply(220, "Ready to start TLS")
+	if e := s.reply(220, "Ready to start TLS"); e != nil {
+		return e
+	}
 
 	tlsConn := tls.Server(s.conn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("TLS handshake error from %s: %v", s.remoteAddr, err)
-		return
+		return err
 	}
 
 	s.conn = tlsConn
@@ -330,17 +338,13 @@ func (s *Session) handleSTARTTLS() {
 	s.helo = ""
 	s.mailFrom = ""
 	s.rcptTo = make([]string, 0)
+
+	return nil
 }
 
-func (s *Session) handleAUTH(arg string) {
-	if !config.C.RequireAuth {
-		s.reply(502, "Authentication not enabled")
-		return
-	}
-
+func (s *Session) handleAUTH(arg string) error {
 	if s.auth {
-		s.reply(503, "Already authenticated")
-		return
+		return s.reply(503, "Already authenticated")
 	}
 
 	parts := strings.SplitN(arg, " ", 2)
@@ -348,24 +352,26 @@ func (s *Session) handleAUTH(arg string) {
 
 	switch mechanism {
 	case "PLAIN":
-		s.handleAuthPlain(parts)
+		return s.handleAuthPlain(parts)
 	case "LOGIN":
-		s.handleAuthLogin()
-	default:
-		s.reply(504, "Authentication mechanism not supported")
+		return s.handleAuthLogin()
 	}
+
+	return s.reply(504, "Authentication mechanism not supported")
 }
 
-func (s *Session) handleAuthPlain(parts []string) {
+func (s *Session) handleAuthPlain(parts []string) error {
 	var credentials string
 
 	if len(parts) > 1 {
 		credentials = parts[1]
 	} else {
-		s.reply(334, "")
+		if e := s.reply(334, ""); e != nil {
+			return e
+		}
 		line, err := s.reader.ReadLine()
 		if err != nil {
-			return
+			return err
 		}
 		credentials = line
 	}
@@ -373,33 +379,40 @@ func (s *Session) handleAuthPlain(parts []string) {
 	// Decode and verify credentials
 	if s.server.AuthenticatePlain(credentials) {
 		s.auth = true
-		s.reply(235, "Authentication successful")
-	} else {
-		s.reply(535, "Authentication failed")
+		return s.reply(235, "Authentication successful")
 	}
+
+	return s.reply(535, "Authentication failed")
 }
 
-func (s *Session) handleAuthLogin() {
+func (s *Session) handleAuthLogin() error {
 	// Request username
-	s.reply(334, "VXNlcm5hbWU6") // "Username:" base64
+	if e := s.reply(334, "VXNlcm5hbWU6"); e != nil {
+		return e // "Username:" base64
+	}
+
 	username, err := s.reader.ReadLine()
 	if err != nil {
-		return
+		return err
 	}
 
 	// Request password
-	s.reply(334, "UGFzc3dvcmQ6") // "Password:" base64
+	if e := s.reply(334, "UGFzc3dvcmQ6"); e != nil {
+		return e // "Password:" base64
+	}
 	password, err := s.reader.ReadLine()
 	if err != nil {
-		return
+		return err
 	}
 
-	if s.server.AuthenticateLogin(username, password) {
+	ok, err := s.server.AuthenticateLogin(username, password)
+	log.Printf("handleAuthLogin e=" + err.Error())
+	if ok {
 		s.auth = true
-		s.reply(235, "Authentication successful")
-	} else {
-		s.reply(535, "Authentication failed")
+		return s.reply(235, "Authentication successful")
 	}
+
+	return s.reply(535, "Authentication failed")
 }
 
 func (s *Session) extractEmail(arg string) string {
@@ -420,14 +433,6 @@ func (s *Session) extractEmail(arg string) string {
 	return ""
 }
 
-func (s *Session) getDomain(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) == 2 {
-		return parts[1]
-	}
-	return ""
-}
-
 func (s *Session) isLocalDomain(domain string) bool {
 	for _, d := range config.C.LocalDomains {
 		if strings.EqualFold(d, domain) {
@@ -438,20 +443,11 @@ func (s *Session) isLocalDomain(domain string) bool {
 }
 
 func (s *Session) isSenderWhitelisted(email string) bool {
-	// Check exact email match
+	// Check using suffixmatch
 	for _, w := range config.C.WhitelistEmails {
-		if strings.EqualFold(w, email) {
+		if strings.HasSuffix(email, w) {
 			return true
 		}
 	}
-
-	// Check domain match
-	domain := s.getDomain(email)
-	for _, d := range config.C.WhitelistDomains {
-		if strings.EqualFold(d, domain) {
-			return true
-		}
-	}
-
 	return false
 }

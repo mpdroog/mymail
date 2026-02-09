@@ -1,7 +1,7 @@
 {
   "hostname": "mail.example.com",
   "listen_addr": ":25",
-  "max_size": 10485760,
+  "max_size": "10MB",
   "max_recipients": 100,
   "tls_cert": "/etc/ssl/certs/mail.crt",
   "tls_key": "/etc/ssl/private/mail.key",
@@ -16,6 +16,5 @@
   "local_domains": ["example.com", "mail.example.com"],
   "enable_whitelist": true,
   "whitelist_emails": ["trusted@sender.com", "noreply@github.com"],
-  "whitelist_domains": ["trusted-company.com", "google.com"],
   "reject_msg": "Please use the contact form at rootdev.nl"
 }

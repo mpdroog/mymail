@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -55,14 +57,13 @@ func (s *Server) Start() error {
 		// Try to load TLS config for implicit TLS (port 465)
 		cert, err := tls.LoadX509KeyPair(config.C.TLSCert, config.C.TLSKey)
 		if err != nil {
-			log.Printf("Warning: Could not load TLS cert, starting without implicit TLS: %v", err)
-			listener, err = net.Listen("tcp", config.C.ListenAddr)
-		} else {
-			tlsConfig := &tls.Config{
-				Certificates: []tls.Certificate{cert},
-			}
-			listener, err = tls.Listen("tcp", config.C.ListenAddr, tlsConfig)
+			return err
 		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		}
+		listener, err = tls.Listen("tcp", config.C.ListenAddr, tlsConfig)
 	} else {
 		listener, err = net.Listen("tcp", config.C.ListenAddr)
 	}
@@ -72,6 +73,7 @@ func (s *Server) Start() error {
 	}
 
 	s.listener = listener
+	// TODO: Verbosity
 	log.Printf("SMTP server listening on %s", config.C.ListenAddr)
 
 	go s.acceptLoop()
@@ -101,17 +103,20 @@ func (s *Server) acceptLoop() {
 	}
 }
 
-func (s *Server) Stop() {
+func (s *Server) Stop() error {
 	close(s.quit)
-	s.listener.Close()
+	e := s.listener.Close()
 	s.wg.Wait()
 	log.Println("SMTP server stopped")
+	return e
 }
 
-func (s *Server) ProcessEmail(from string, to []string, data []byte) error {
-	// Determine if this is local delivery or needs to be relayed
+func (s *Server) ProcessEmail(from string, to []string, data []byte, auth bool) error {
 	for _, recipient := range to {
-		domain := getDomain(recipient)
+		domain, err := getDomain(recipient)
+		if err != nil {
+			return err
+		}
 
 		if s.isLocalDomain(domain) {
 			// Local delivery
@@ -119,6 +124,10 @@ func (s *Server) ProcessEmail(from string, to []string, data []byte) error {
 				return err
 			}
 		} else {
+			if !auth {
+				return fmt.Errorf("Cannot relay without auth")
+			}
+
 			// Queue for relay
 			if err := s.storage.QueueForRelay(from, recipient, data); err != nil {
 				return err
@@ -148,19 +157,19 @@ func (s *Server) AuthenticatePlain(credentials string) bool {
 	return ok && storedPass == password
 }
 
-func (s *Server) AuthenticateLogin(usernameB64, passwordB64 string) bool {
+func (s *Server) AuthenticateLogin(usernameB64, passwordB64 string) (bool, error) {
 	username, err := base64.StdEncoding.DecodeString(usernameB64)
 	if err != nil {
-		return false
+		return false, err
 	}
 
 	password, err := base64.StdEncoding.DecodeString(passwordB64)
 	if err != nil {
-		return false
+		return false, err
 	}
 
 	storedPass, ok := s.users[string(username)]
-	return ok && storedPass == string(password)
+	return ok && storedPass == string(password), nil
 }
 
 func (s *Server) isLocalDomain(domain string) bool {
@@ -172,10 +181,10 @@ func (s *Server) isLocalDomain(domain string) bool {
 	return false
 }
 
-func getDomain(email string) string {
+func getDomain(email string) (string, error) {
 	parts := strings.Split(email, "@")
-	if len(parts) == 2 {
-		return parts[1]
+	if len(parts) != 2 {
+		return "", errors.New("invalid email")
 	}
-	return ""
+	return parts[1], nil
 }

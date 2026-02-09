@@ -1,0 +1,9 @@
+{
+  "listen_addr": ":143",
+  "insecure_auth": true,
+  "tls_cert": "/etc/ssl/certs/mail.crt",
+  "tls_key": "/etc/ssl/private/mail.key",
+  "auth_file": "users.json",
+  "mail_dir": "./maildir",
+  "domain": "rootdev.nl"
+}
